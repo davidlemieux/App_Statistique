@@ -197,15 +197,10 @@ avec le graphique ci-dessus il est possible de voir que la distribution des mesu
 
 
 #### Merge Data
-aq_final <- aq_keep  %>% group_by(Date) %>% summarise(mean_no2=mean(value,na.rm = T),
-                                                      median_no2=median(value,na.rm = T))
+aq_final <- aq_keep  %>% group_by(Date) %>% summarise(mean_no2=mean(value,na.rm = T))
 
 ggplot(data=aq_final)+
-  geom_point(mapping=aes(x=Date,y=median_no2),color="green")+
-  geom_point(mapping=aes(x=Date,y=median_no2),color="blue")
-
-
-aq_final <- aq_final %>% select(-mean_no2)
+  geom_point(mapping=aes(x=Date,y=mean_no2),color="green")
 
 
 # ICI on merge les données
@@ -234,12 +229,12 @@ saveRDS(data,file = "./raw_data/raw_data_merged.rds")
 ``` {r explo}
 
 ggplot(data=data)+
-  geom_point(mapping=aes(x=Date,median_no2,color=Conf_level))+ scale_fill_hue(l=40, c=35)
+  geom_point(mapping=aes(x=Date,mean_no2,color=Conf_level))+ scale_fill_hue(l=40, c=35)
 
 
 
 ggplot(data=data)+
-  geom_point(mapping=aes(y=median_no2,x=T_min,color=month))+facet_grid(month~.)
+  geom_point(mapping=aes(y=mean_no2,x=T_min,color=month))+facet_grid(month~.)
 ```
 
 
@@ -273,10 +268,10 @@ data$month <- factor(months(data$Date))
 data$julian <- julian(data$Date, origin = min(data$Date))
 
 ggplot(data=data)+
-  geom_histogram(mapping=aes(x=median_no2))+facet_grid(weekday~.)
+  geom_histogram(mapping=aes(x=mean_no2))+facet_grid(weekday~.)
 
 ggplot(data=data)+
-  geom_histogram(mapping=aes(x=median_no2))+facet_grid(month~.)
+  geom_histogram(mapping=aes(x=mean_no2))+facet_grid(month~.)
 
 
 jour_ferie <- read.csv("./raw_data/jours_feries_metropole.csv",header=FALSE)
@@ -297,23 +292,23 @@ Tel qu'il est possible de le voir dans les travaux de [@mei2014random], des vari
 ```{r}
 
 # Ajout des saisonalité
-data$no2_lag1 <- lag(data$median_no2,1)
+data$no2_lag1 <- lag(data$mean_no2,1)
 
-data$no2_lag7 <- lag(data$median_no2,7)
+data$no2_lag7 <- lag(data$mean_no2,7)
   
-data$no2_lag28 <- lag(data$median_no2,28)
+data$no2_lag28 <- lag(data$mean_no2,28)
 
-data$no2_lag1y <- lag(data$median_no2,7*52)
+data$no2_lag1y <- lag(data$mean_no2,7*52)
 
 data <- data %>% filter(!is.na(no2_lag1y))
 
  ggplot(data=data)+
-  geom_point(mapping=aes(y=median_no2,no2_lag7,color=weekday))
+  geom_point(mapping=aes(y=mean_no2,no2_lag7,color=weekday))
 ggplot(data=data)+
-  geom_point(mapping=aes(y=median_no2-no2_lag1,x=Date,color=month))
+  geom_point(mapping=aes(y=mean_no2-no2_lag1,x=Date,color=month))
 
 ggplot(data=data)+
-  geom_point(mapping=aes(y=median_no2-no2_lag1,x=Date,color=weekday))
+  geom_point(mapping=aes(y=mean_no2-no2_lag1,x=Date,color=weekday))
 ```
 
 
@@ -359,7 +354,7 @@ Les variables de transports selon plusieurs catégories de déplacements seront 
 
 ```{r }
 
-data$Conf_level <- factor(data$Conf_level,ordered = TRUE)
+data$Conf_level <- as.numeric(data$Conf_level)
 
 ```
 
@@ -402,7 +397,7 @@ rmse_list <- list()
 rmse_final_list <- list()
 rsq_list <- list()
 for (i in seq(1,nrow(tune_grid))){
-   rf_gridsearch[[i]] <-  randomForest(median_no2 ~ ., data=DF_1 %>% select(-Date),ntree=500, 
+   rf_gridsearch[[i]] <-  randomForest(mean_no2 ~ ., data=DF_1 %>% select(-Date),ntree=500, 
                                        mtry=tune_grid$mtry[i], 
                                        node_size=tune_grid$node_size[i],
                                        importance=TRUE)
@@ -420,15 +415,15 @@ n_min=which(unlist(rmse_final_list)==min(unlist(rmse_final_list)))
 n_max=which(unlist(rmse_final_list)==max(unlist(rmse_final_list)))
 
 DF_1$Best_Pred <- rf_gridsearch[[n_min]]$predicted
-DF_1$Diff <- DF_1$Best_Pred-DF_1$median_no2
+DF_1$Diff <- DF_1$Best_Pred-DF_1$mean_no2
 
 
 ggplot(data=DF_1)+
-  geom_point(mapping=aes(x=Date,y=median_no2),color="blue")+
+  geom_point(mapping=aes(x=Date,y=mean_no2),color="blue")+
   geom_point(mapping=aes(x=Date,y=Best_Pred),color="red")
 
 P <- ggplot(data=DF_1)+
-  geom_point(mapping=aes(x=Date,y=median_no2,color=weekday)) +ggtitle("DIFF= PRED-OBS") + facet_wrap(weekday~.)
+  geom_point(mapping=aes(x=Date,y=mean_no2,color=weekday)) +ggtitle("DIFF= PRED-OBS") + facet_wrap(weekday~.)
 
 ggplotly(P)
 
