@@ -1,0 +1,459 @@
+---
+title: "Impact des politiques de confinement sur la production de NO2 à Paris"
+author: 
+  - Christelle George 11288106
+  - David Lemieux - 11118064
+  - Quentin Tabourin 11290690
+date: "8 novembre 2020"
+bibliography: references.bib
+biblio-style: alphadin
+nocite: '@*'
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+setwd("C:\\Users\\David\\OneDrive\\1_Ecole\\HEC\\Msc\\Aut 2020\\Apprentissage Statistique\\Travail d'équipe")
+htmltools::img(src = knitr::image_uri(".\\Images\\HEC Montreal.jpg"), 
+               alt = 'logo', 
+               style = 'position:absolute; top:0; right:25%;width:20vw%;height:auto; padding:10px;')
+
+knitr::opts_chunk$set(fig.width=12, fig.height=8, fig.path='Figs/',
+                      echo=FALSE, warning=FALSE, message=FALSE)
+
+
+
+set.seed(1234)
+```
+
+```{r Library, include=FALSE}
+library(dplyr)
+library(ropenaq) 
+library(lubridate)
+library(purrr)
+library(ggplot2)
+library(grid)
+library(zoo)
+library(gridExtra)
+library(randomForest)
+library(caret)
+library(ropenaq)
+library(sp)
+library(leaflet)
+library(reshape2)
+library(readxl)
+
+```
+
+
+```{r Data_Import, include =FALSE}
+
+# POur la mobilité
+mobility<- read.csv(file = "./raw_data/2020_FR_Region_Mobility_Report.csv",header =TRUE,encoding = "UTF-8")
+mobility <- mobility %>% filter( sub_region_2=="Paris") %>% select(-c(country_region_code,country_region,sub_region_1,metro_area,iso_3166_2_code,census_fips_code))
+mobility$date <- as.Date(mobility$date)
+mobility <- mobility %>% select(-sub_region_2)
+colnames(mobility)[1] <- "Date"
+
+
+
+# Pour le climat
+weather<- read.csv2(file = "./raw_data/Weather_Data.csv",header =TRUE,encoding = "UTF-8")
+weather <- weather %>% select(Date, Direction.du.vent.moyen.10.mn,
+                              Précipitations.dans.les.3.dernières.heures,
+                              Vitesse.du.vent.moyen.10.mn,
+                              Humidité,Pression.station,
+                              Température...C.) %>% mutate(date= as.Date(Date)) %>% select(-Date)
+
+weather <- weather[,c(7,6,1,2,3,4,5)]
+cols <- 2:7
+weather[,cols] = apply(weather[,cols], 2, function(x) as.numeric(as.character(x)))
+
+weather <- weather %>% group_by(date) %>% summarise(Moy_dir_vent=mean(Direction.du.vent.moyen.10.mn,na.rm = TRUE),
+                                                    Moy_pre= mean(Précipitations.dans.les.3.dernières.heures,na.rm = TRUE),
+                                                    Moy_vit_vent= mean(Vitesse.du.vent.moyen.10.mn,na.rm = TRUE),
+                                                    Moy_humitite= mean(Humidité,na.rm = TRUE),
+                                                    Moy_pression= mean(Pression.station,na.rm = TRUE),
+                                                    T_max= max(Température...C.,na.rm = TRUE),
+                                                    T_min= min(Température...C.,na.rm = TRUE))
+colnames(weather)[1] <- "Date"
+
+
+#### AQ Data c'est comment puisque l'alro ne fonctionne pas toujours
+
+# aq <- aq_measurements(country= "FR",
+#                         city = "Paris",
+#                         date_from = "2018-01-01",
+#                         date_to = "2020-10-31",
+#                         parameter = "no2")
+# 
+# aq <- aq %>% select(location,value,dateLocal,latitude,longitude)
+# 
+# aq$dateLocal <- as.Date(aq$dateLocal)
+# colnames(aq)[3] <- "Date"
+# saveRDS(aq,"./raw_data/Paris_aq.rds")
+
+aq <- readRDS("./raw_data/Paris_aq.rds")
+
+
+# Confinement Data
+confinement <- read_excel("./raw_data/ConfinementBIS.xlsx")
+confinement$Date <- as.Date(confinement$Date)
+colnames(confinement)[2] <- "Conf_level"
+
+
+
+```
+
+
+
+# Introduction 
+
+
+
+## Objectif d'analyse
+
+L'objectif de ce présent papier est de mieux comprendre l'implication des changements de politiques concernant le confinement en France, plus spécifiquement à Paris, sur les observations de N02.
+
+## Revue de la littérature
+
+La revue de la littérature se fait sur 2 plans principaux;<br>
+- *Les forêts aléatoires (Ci-après "RF"") et les RF dans les séries temporelles*;<br>
+- *La modèlisation de polluants* 
+
+
+### Les forêts aléatoires
+
+Les forêts aléatoires sont utilisées depuis plusieurs années dans différents domaines allant de la finance à la biostatistique [@kane2014comparison] en passant par l'environement [@gocheva2019regression]
+
+Des auteurs comme @dudek2015short et @mei2014random ont utilisé les forêts aléatoires afin de prédire la demande d'électricités à court-terme. Comme le mentionne @dudek2015short, les RF sont des modèles relativement simple avec un nombre restraint de paramètres à calibrer et à évaluer. 
+
+
+### La modèlisation de polluants
+
+Des études sur la modèlisation des polluants sont nombreuse en Asie et en Europe. [@gocheva2019regression] et [@stoimenova2017regression] 
+
+## Exploration des Données
+
+```{r DataloadPrep, echo=FALSE, include=FALSE}
+
+aq2 <- aq %>% group_by(location) %>% summarise(number=n(),lon=mean(longitude),lat=mean(latitude),last_date=max(Date))
+
+leaflet(aq2) %>% addMarkers(~lon,~lat,label=~as.character(location), labelOptions = labelOptions(noHide = F,direction="auto")) %>% addTiles()
+
+aq_keep <- aq %>% filter(location %in% c("FR04143","FR04071","FR04141"))
+
+ggplot(data=aq_keep)+
+  geom_point(mapping=aes(x=Date,y=value,color=location))
+
+
+
+# Tout dépendant ce que l'on veux faire avec Cela on doit rerouler la partie d'en haut
+
+aq_keep <- aq_keep %>% filter(location =="FR04071")
+
+
+```
+
+
+Il est possible de voir que la location FR04141 est souvent beaucoup plus extrême que les deux stations les plus proches. Cette raison nous pousse a croire que les lectures sont possiblement biaisés ou que cette location est très sensible aux évenement sporatique et imprévisible. 
+
+Il est aussi possible de voir que la location FR04143 n'a pas toutes les données disponibles pour la période à l'étude. Cette location sera donc enlevée.
+
+Notre étude portera donc sur la location FR04071 qui est tout près de l'ile de la cité
+
+
+
+
+### Traitement des outlers
+
+Avec le graphique ci-dessus, il est possible de remarquer deux choses. Premièrement plusieurs observation horraire affiche 0 ce qui est impossible. c'est données seront donc éliminé avant de faire la moyenne journalière. Deuxièmement, il est possible de voir une observation avoisinant les 300. ce point est très éloigné de l'observation la plus proche et sera donc éliminé. comme il s'agit d'observation horraire cela ne fera que corriger la moyenne journalière. 
+
+
+### Choix de la métrique
+
+```{r Outliers}
+aq_keep <- aq_keep %>% filter(value>0,value<200)
+
+
+ggplot(aq_keep)+
+  geom_histogram(mapping=aes(x=value),color="green")
+
+
+
+
+# ICI je veux voir la distribution pour les observation des journées s'il y a juste une observation vrm weird on va remplacer les trois observations
+
+```
+avec le graphique ci-dessus il est possible de voir que la distribution des mesures de No2 est fortement asymétrique. p
+
+
+
+
+```{r}
+
+
+#### Merge Data
+aq_final <- aq_keep  %>% group_by(Date) %>% summarise(mean_no2=mean(value,na.rm = T),
+                                                      median_no2=median(value,na.rm = T))
+
+ggplot(data=aq_final)+
+  geom_point(mapping=aes(x=Date,y=median_no2),color="green")+
+  geom_point(mapping=aes(x=Date,y=median_no2),color="blue")
+
+
+aq_final <- aq_final %>% select(-mean_no2)
+
+
+# ICI on merge les données
+data <- merge(aq_final,weather,by = "Date",all.x=T)
+rm(aq);rm(weather)
+
+data <- merge(data,confinement, by="Date",all.x=TRUE)
+data$Conf_level[is.na(data$Conf_level)] <- 0
+rm(confinement)
+
+data <- merge(data,mobility, by="Date",all.x=T)
+rm(mobility)
+
+
+# Saving the end RDS for future import
+
+saveRDS(data,file = "./raw_data/raw_data_merged.rds")
+
+
+
+
+```
+
+
+
+``` {r explo}
+
+ggplot(data=data)+
+  geom_point(mapping=aes(x=Date,median_no2,color=Conf_level))+ scale_fill_hue(l=40, c=35)
+
+
+
+ggplot(data=data)+
+  geom_point(mapping=aes(y=median_no2,x=T_min,color=month))+facet_grid(month~.)
+```
+
+
+
+# Méthodologie
+
+## Forêts aléatoires - RF
+
+Expliquer pourquoi les forest sont interessante, meme pour les time series ( voir article)
+Expliquer les forest aléatoire, et les parametre qui sont tunable. 
+Expliquer Les Paramêtre que l'on va tuner
+
+Expliquer que l'on utilise la cross validation. 
+SI on a seulement un seul modèle on le fait sur tout le Data Set puisque l'on compare pas
+SI on a une compétition on le fait sur un train test split
+
+## Données et Variables
+
+Les différentes variables explicatives se sépare en 4 blocs;
+*Variable de calendrier*, *Variables de décalage*, *Variable de climats* et  *variables de sociales*
+
+*Variable de calendrier*
+Parmi les variables de "calendrier", il est possible d'y voir l'utilisation d'indication pour le jour de la semaine (@mei2014random), le jour dans le mois, le mois. 
+
+Finalement, tout comme le propose [@gocheva2019regression], une variable "date-time" sera utilisée afin de représenter le nombre de journées julienne depuis le début de la période à l'étude. (aussi [@gocheva2019regression] et [@portoles2018electricity])
+
+```{r }
+data$day <- day(data$Date)
+data$weekday <- factor(weekdays(data$Date))
+data$month <- factor(months(data$Date))
+data$julian <- julian(data$Date, origin = min(data$Date))
+
+ggplot(data=data)+
+  geom_histogram(mapping=aes(x=median_no2))+facet_grid(weekday~.)
+
+ggplot(data=data)+
+  geom_histogram(mapping=aes(x=median_no2))+facet_grid(month~.)
+
+
+jour_ferie <- read.csv("./raw_data/jours_feries_metropole.csv",header=FALSE)
+jour_ferie <- jour_ferie %>% select(V1)
+data$jour_ferie <- 0
+data$jour_ferie[data$Date %in% as.Date(jour_ferie$V1)] <- 1
+
+
+
+
+```
+
+
+*Variables de décalage*
+Tel qu'il est possible de le voir dans les travaux de [@mei2014random], des variables représentant la variable dépendante à plusieurs moment dans le temps est utilisé. Cette technique est utilisé afin d'admettre une dépendance temporelle dans les observations de la série. Dans notre cas, il s'agit bien d'une série temporelle, alors nous optons pour la même stratégie. Les variables décalées de 1, 7 et 28 jours seront utilisées. Voir aussi [@kane2014comparison],[@portoles2018electricity], [@gocheva2019regression] et [@stoimenova2017regression]
+
+
+```{r}
+
+# Ajout des saisonalité
+data$no2_lag1 <- lag(data$median_no2,1)
+
+data$no2_lag7 <- lag(data$median_no2,7)
+  
+data$no2_lag28 <- lag(data$median_no2,28)
+
+data$no2_lag1y <- lag(data$median_no2,7*52)
+
+data <- data %>% filter(!is.na(no2_lag1y))
+
+ ggplot(data=data)+
+  geom_point(mapping=aes(y=median_no2,no2_lag7,color=weekday))
+ggplot(data=data)+
+  geom_point(mapping=aes(y=median_no2-no2_lag1,x=Date,color=month))
+
+ggplot(data=data)+
+  geom_point(mapping=aes(y=median_no2-no2_lag1,x=Date,color=weekday))
+```
+
+
+*Variable de climats* 
+
+Dans la modélisation d'un poluant, les études traditionnelles comme celle de [@gocheva2019regression] s'orientent vers l'utilisation de variables environementales. Afin de faire la sélection de variables significatives pour mieux comprendre l'impact des politiques de confinement sur les mesures de NO2 des variables comme les précipitations, la pression de l'air, l'humidité sont utilisées, nous ferons de même. [@gocheva2019regression], [@stoimenova2017regression], [@elayan2006ozone]
+
+
+La transformation de la variable de direction du vent est faite suivant les travaux de [@stoimenova2017regression] qui utilise la transformation suivante
+$ WDI = 1 + \sin(Wind\_direction +\frac{\pi}{4})$
+
+```{r}
+data$Moy_dir_vent <- 1+ sin(data$Moy_dir_vent +pi/4)
+```
+
+
+L'utilisation de la température est aussi utilisé dans le cadre de la modélisation de la demande d'électricité. Dans ce contexte, certains auteurs comme [@hor2005analyzing] ont utilisé des transformation de la variable températures afin de prendre en considération la sévérité et la duration des cycle de températures. cette logique est utilisée ici afin de linéarisé davantage cette variable.
+
+Cette transformation est aussi très utile afin d'enlever les nombres négatifs qui causent des problèmes lors de la standardisation des variables avec la méthodologie de Yeo-Johnson
+
+```{r}
+
+data$hdd = sapply(data$T_min,FUN=function(x){
+  max(10-x,0)
+})
+
+data$cdd = sapply(data$T_max,FUN=function(x){
+  max(x-15,0)
+})
+                  
+data <- data %>% select(-c(T_max,T_min))
+
+ggplot(data=data)+
+  geom_point(mapping=aes(y=mean_no2,x=cdd,color=month))+facet_grid(month~.)        
+                  
+```
+
+
+*variables de sociales*
+Parmi les variables sociales il est possible de noter la variable principale à l'étude, c'est-à-dire la variable du niveau de confinement pour la France. Ultimement c'est cette variable que nous voulons tester sur la significativité.
+
+Les variables de transports selon plusieurs catégories de déplacements seront aussi utilisées.
+
+```{r }
+
+data$Conf_level <- factor(data$Conf_level,ordered = TRUE)
+
+```
+
+
+### Scaling pour les données
+
+Tel que vu en classe, la standardisation des données est un facteur important dans la performance des algorythmes d'apprentissages statistique. De plus, comme il a été possible de le voir dans l'analyse des données à une section précéedente, les données ne suivent pas des distributions normales. Dans cette ligne de pensé et suivant les travaux de [@stoimenova2017regression] nous optons pour la transformation de Yeo-Johson
+
+
+
+## Modeles
+
+[@mei2014random] souligne que seulement trois paramètres sont à calibrer pour les RF. Par exemple, ces auteurs utilisent 500 arbres (B=500), 3 variables par split (m=3), et un minimum de 5 observations par noeud finaux (nmin=5). Nous élargissons la recherche de paramètre afin d'inclure d'autres facteurs observé dans des travaux connexes 
+
+Le modèle est créé avec le package RandomForest de R [@rf] 
+
+le traitement des variables catégoriques se fera par l'algorithme puisqu'il n'y a pas d'évidences que le préprocessing des variable catégorielles avec les "one-hot-encoding" améliore les résultats
+
+### Sans variables de mobilité
+```{r }
+DF_1 <- data %>% select(-c(retail_and_recreation_percent_change_from_baseline,
+                           grocery_and_pharmacy_percent_change_from_baseline,
+                           parks_percent_change_from_baseline,
+                           transit_stations_percent_change_from_baseline,
+                           workplaces_percent_change_from_baseline,
+                           residential_percent_change_from_baseline)) 
+
+
+#DF_1 <- cbind(DF_1 %>% select(mean_no2),predict(preProcess(DF_1 %>% select(-mean_no2),method = "YeoJohnson"),DF_1 %>% select(-mean_no2)))
+
+
+tune_grid <- expand.grid(mtry = seq(3, 16, by = 2),
+                         node_size  = c(3:7))
+
+
+
+
+rf_gridsearch <-list()
+rmse_list <- list()
+rmse_final_list <- list()
+rsq_list <- list()
+for (i in seq(1,nrow(tune_grid))){
+   rf_gridsearch[[i]] <-  randomForest(median_no2 ~ ., data=DF_1 %>% select(-Date),ntree=500, 
+                                       mtry=tune_grid$mtry[i], 
+                                       node_size=tune_grid$node_size[i],
+                                       importance=TRUE)
+
+   rmse_list[[i]] <- sqrt(rf_gridsearch[[i]]$mse)
+   rsq_list[[i]] <- tail(rf_gridsearch[[i]]$rsq,1)
+   rmse_final_list[[i]] <- tail(sqrt(rf_gridsearch[[i]]$mse),1)
+   print(rsq_list[[i]])
+   print(rmse_final_list[[i]])
+}
+
+
+
+n_min=which(unlist(rmse_final_list)==min(unlist(rmse_final_list)))
+n_max=which(unlist(rmse_final_list)==max(unlist(rmse_final_list)))
+
+DF_1$Best_Pred <- rf_gridsearch[[n_min]]$predicted
+DF_1$Diff <- DF_1$Best_Pred-DF_1$median_no2
+
+
+ggplot(data=DF_1)+
+  geom_point(mapping=aes(x=Date,y=median_no2),color="blue")+
+  geom_point(mapping=aes(x=Date,y=Best_Pred),color="red")
+
+P <- ggplot(data=DF_1)+
+  geom_point(mapping=aes(x=Date,y=median_no2,color=weekday)) +ggtitle("DIFF= PRED-OBS") + facet_wrap(weekday~.)
+
+ggplotly(P)
+
+
+ggplot(data=DF_1)+
+  geom_density(mapping=aes(x=Diff,fill=weekday))+ggtitle("DIFF= PRED-OBS")
+
+```
+
+
+
+### avec variables de mobilité
+
+
+
+# Résultats
+
+tout comme [@gocheva2019regression] nous sélectionnons le modèle basé sur sa vraisemblance, comme la mesure de RMSE (aussi [@gocheva2019regression])
+
+# Conclusion
+
+un des désavantage des forêts aléatoire est sa difficulté à interpreter des données entrantes qui sont en dehors des variables déjà vues par le modèle. Ainsi, si la France invoque une catégorie de confinement 4 (jusqu'ici un maximum de 3) le modèle ne serait probablement pas comment agir.
+
+# Annexes
+
+# References
+
+
